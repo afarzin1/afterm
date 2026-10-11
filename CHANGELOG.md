@@ -83,6 +83,9 @@ versions. Later releases get their own heading.
   Nothing was held back before, and there is now nothing to unlock: every
   build is the whole of afterm. A `license.txt` left beside the saved hosts by
   an earlier build is ignored.
+  Windows builds and releases come from GitHub Actions
+  (`.github/workflows/build.yml`), which replaces the Azure DevOps pipeline,
+  and `scripts/get-afterm.ps1` updates from the latest GitHub release.
 
 - **A shell that outlives its connection.** Off until *Settings ▸ Keep shells
   running in tmux* is switched on; with it off, none of its controls show and a

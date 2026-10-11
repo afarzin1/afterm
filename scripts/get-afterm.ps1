@@ -1,35 +1,30 @@
 <#
 .SYNOPSIS
-Download afterm.exe from the latest pipeline run and drop it over the installed
-copy. Avoids the browser, which blocks unsigned executables.
+Download afterm.exe from the latest GitHub release and, with -Install, drop it
+over the installed copy.
 
 .DESCRIPTION
 Nothing here needs the installer: Tauri compiles the frontend into afterm.exe,
-so replacing that one file updates an existing installation.
-
-It reads from whichever Azure DevOps organisation and project run
-azure-pipelines.yml; name them with -Organisation and -Project. Authentication
-uses a Personal Access Token with "Build (read)" scope, created under User
-settings > Personal access tokens in that organisation. Pass it as -Token or
-set it once:
-
-    setx AZDO_PAT "your-token"
+so replacing that one file updates an existing installation. Releases are
+public, so no token is needed.
 
 .EXAMPLE
-    ./get-afterm.ps1 -Organisation my-org -Project my-project
-    Download the newest afterm.exe from main into the current directory.
+    ./get-afterm.ps1
+    Download the newest afterm.exe into the current directory.
 
 .EXAMPLE
-    ./get-afterm.ps1 -Organisation my-org -Project my-project -Install
+    ./get-afterm.ps1 -Install
     Download it, close afterm if it is running, and replace the installed copy.
+
+.EXAMPLE
+    ./get-afterm.ps1 -Tag v1.0.1 -Install
+    Install a specific release rather than the latest.
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][string]$Organisation,
-    [Parameter(Mandatory)][string]$Project,
-    [string]$Branch = 'main',
-    [string]$Artifact = 'afterm-exe',
-    [string]$Token = $env:AZDO_PAT,
+    [string]$Repository = 'afarzin1/afterm',
+    # A release tag such as v1.0.1. Empty means the latest release.
+    [string]$Tag = '',
     [string]$Destination = (Get-Location).Path,
     # Replace the installed executable rather than only downloading it.
     [switch]$Install
@@ -37,44 +32,33 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if (-not $Token) {
-    throw 'No token. Pass -Token, or run: setx AZDO_PAT "your-token" (then reopen the shell)'
+$api = if ($Tag) {
+    "https://api.github.com/repos/$Repository/releases/tags/$Tag"
+} else {
+    "https://api.github.com/repos/$Repository/releases/latest"
 }
 
-$auth = @{ Authorization = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$Token")) }
-$base = "https://dev.azure.com/$Organisation/$Project/_apis"
+Write-Host "Looking up $(if ($Tag) { $Tag } else { 'the latest release' }) of $Repository..."
+try {
+    $release = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'get-afterm' }
+} catch {
+    throw "No release found at $api. Has one been published yet?"
+}
+Write-Host ("  {0}, published {1}" -f $release.tag_name, $release.published_at)
 
-Write-Host "Looking for the newest successful run on $Branch..."
-$runs = Invoke-RestMethod -Headers $auth -Uri `
-    "$base/build/builds?branchName=refs/heads/$Branch&resultFilter=succeeded&statusFilter=completed&`$top=1&api-version=7.0"
-
-if (-not $runs.value) { throw "No successful run found on $Branch." }
-$run = $runs.value[0]
-Write-Host ("  run {0}, finished {1}" -f $run.buildNumber, $run.finishTime)
-
-# The exe is published on every artifact-producing run, packaged or not.
-$artifacts = Invoke-RestMethod -Headers $auth -Uri `
-    "$base/build/builds/$($run.id)/artifacts?api-version=7.0"
-$wanted = $artifacts.value | Where-Object { $_.name -eq $Artifact }
-if (-not $wanted) {
-    $names = ($artifacts.value | ForEach-Object { $_.name }) -join ', '
-    throw "Run $($run.buildNumber) has no '$Artifact' artifact. It published: $names"
+$asset = $release.assets | Where-Object { $_.name -eq 'afterm.exe' } | Select-Object -First 1
+if (-not $asset) {
+    $names = ($release.assets | ForEach-Object { $_.name }) -join ', '
+    throw "Release $($release.tag_name) has no afterm.exe. It has: $names"
 }
 
-# Artifacts download as a zip regardless of how few files they hold.
-$zip = Join-Path $env:TEMP "afterm-$($run.id).zip"
+$download = Join-Path $env:TEMP "afterm-$($release.tag_name).exe"
 Write-Host 'Downloading...'
-Invoke-WebRequest -Headers $auth -Uri $wanted.resource.downloadUrl -OutFile $zip
-
-$unpacked = Join-Path $env:TEMP "afterm-$($run.id)"
-if (Test-Path $unpacked) { Remove-Item $unpacked -Recurse -Force }
-Expand-Archive -Path $zip -DestinationPath $unpacked
-$exe = Get-ChildItem $unpacked -Recurse -Filter 'afterm.exe' | Select-Object -First 1
-if (-not $exe) { throw 'No afterm.exe inside the artifact.' }
+Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $download -Headers @{ 'User-Agent' = 'get-afterm' }
 
 if (-not $Install) {
     $out = Join-Path $Destination 'afterm.exe'
-    Copy-Item $exe.FullName $out -Force
+    Move-Item $download $out -Force
     Write-Host "Saved to $out" -ForegroundColor Green
     return
 }
@@ -91,10 +75,9 @@ $installed = Join-Path $env:LOCALAPPDATA 'afterm\afterm.exe'
 if (-not (Test-Path $installed)) {
     $found = Get-Command afterm -ErrorAction SilentlyContinue
     if ($found) { $installed = $found.Source } else {
-        throw 'Could not find an installed afterm.exe. Run the installer once, or use -Destination.'
+        throw 'Could not find an installed afterm.exe. Run the installer once, or leave off -Install.'
     }
 }
 
-Copy-Item $exe.FullName $installed -Force
-Write-Host "Replaced $installed" -ForegroundColor Green
-Write-Host ("Built from run {0} ({1})" -f $run.buildNumber, $run.sourceVersion.Substring(0, 8))
+Move-Item $download $installed -Force
+Write-Host "Replaced $installed with $($release.tag_name)" -ForegroundColor Green

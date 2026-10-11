@@ -442,7 +442,7 @@ follow content that arrived from somewhere else.
 **Windows-only behaviour is only partly verifiable from the author's machine.**
 afterm is developed on Linux. Cross-compiling the Windows target still checks
 the real Windows code path, but the SSH crypto backend is C and assembly, so it
-wants `cargo-xwin` and `clang-cl` rather than rustup alone — see `README.md`.
+wants `cargo-xwin` and `clang-cl` rather than rustup alone — see `CONTRIBUTING.md`.
 The `windows_subsystem` attribute and `CREATE_NO_WINDOW` are compile-checked
 and unexercised locally. What closed most of this gap is not the cross-check
 but the tests that drive the real OpenSSH binaries: they run on the Windows

@@ -1,6 +1,5 @@
 # Windows build: tests, afterm.exe and the MSI/NSIS installers.
 #
-# The GitHub counterpart of azure-pipelines.yml, with the same two switches.
 # Run it by hand from the Actions tab (Build > Run workflow), or push a tag
 # like `v1.0.1` to build everything and attach it to a GitHub Release.
 name: Build

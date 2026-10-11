@@ -139,6 +139,7 @@ Every release signing request is approved by hand by an approver before it is si
 **Privacy policy:** afterm will not transfer any information to other networked systems unless
 specifically requested by the user or the person installing or operating it. It connects only to
 the SSH hosts you tell it to, collects no telemetry or analytics, and does not check for updates.
+The full policy is in [`PRIVACY.md`](PRIVACY.md).
 
 ## License
 

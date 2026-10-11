@@ -124,6 +124,22 @@ Bug reports and pull requests are welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) 
 development loops, the test commands and how releases are built; [`ROADMAP.md`](ROADMAP.md) has
 what is planned and what was ruled out.
 
+## Code signing policy
+
+Windows releases are to be signed with free code signing provided by [SignPath.io](https://about.signpath.io),
+certificate by [SignPath Foundation](https://signpath.org). Signing starts once the project is
+accepted; until then, releases are unsigned. Signed binaries are built from this repository by
+[GitHub Actions](.github/workflows/build.yml), and nothing is signed by hand.
+
+- Committers and reviewers: [@afarzin1](https://github.com/afarzin1)
+- Approvers: [@afarzin1](https://github.com/afarzin1)
+
+Every release signing request is approved by hand by an approver before it is signed.
+
+**Privacy policy:** afterm will not transfer any information to other networked systems unless
+specifically requested by the user or the person installing or operating it. It connects only to
+the SSH hosts you tell it to, collects no telemetry or analytics, and does not check for updates.
+
 ## License
 
 afterm is released under the [MIT license](LICENSE).

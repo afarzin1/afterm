@@ -147,6 +147,7 @@ artifacts. Run it from the **Actions** tab (*Build ▸ Run workflow*) or with `g
 ```bash
 gh workflow run build.yml                                                # everything
 gh workflow run build.yml -f build_installers=false -f run_tests=false   # the fast lane
+gh workflow run build.yml -f release=v1.0.1                              # publish a release
 ```
 
 Unticking *Build MSI and NSIS installers* links the executable with `--no-bundle` and skips
@@ -155,9 +156,18 @@ file is the whole app and replacing it updates an existing installation. Unticki
 backend tests* as well removes the test binary's own link. Both are on by default, because a run
 that publishes an installer should have been tested.
 
-**Releases.** Pushing a tag like `v1.0.1` runs the full build and attaches `afterm.exe` and both
-installers to a GitHub Release for that tag. Bump the version in `package.json`,
-`src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` first, so the installers carry it.
+**Releases.** Either fill in *Release tag* (e.g. `v1.0.1`) when running the workflow, or push that
+tag. Both run the full build and publish `afterm.exe` and both installers as a GitHub Release; a
+manual run creates the tag at the commit it built. Bump the version in `package.json`,
+`src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` first: the run refuses a tag that does not
+match `tauri.conf.json`, so the installers always carry the version on their release.
+
+**Signing.** The executable is built on its own, signed, and only then packed into the installers,
+which are signed in turn — so the installed `afterm.exe` is signed, not just the setup program.
+Signing goes through [SignPath Foundation](https://signpath.org) and switches on when the repository
+has the SignPath settings described in [`.signpath/README.md`](.signpath/README.md); without them
+the build is unsigned. Each signed release sends two signing requests, the executable and the
+installers, and the run waits while an approver approves each in SignPath.
 
 **Caching.** The cargo registry and `src-tauri/target` are cached on `Cargo.lock` and `Cargo.toml`,
 not on the sources: the manifest is in the key because a profile change invalidates every artifact

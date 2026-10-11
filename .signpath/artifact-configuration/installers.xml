@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SignPath artifact configuration, slug "installers": the MSI and the NSIS
+     setup program. The workflow uploads a zip holding exactly these two names
+     and renames them back to Tauri's versioned names afterwards. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <msi-file path="afterm.msi">
+      <authenticode-sign />
+    </msi-file>
+    <pe-file path="afterm-setup.exe">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

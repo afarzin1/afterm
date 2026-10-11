@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SignPath artifact configuration, slug "exe": the application executable,
+     signed before it is packed into the installers. The workflow uploads a zip
+     with afterm.exe at its root. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="afterm.exe" product-name="afterm">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

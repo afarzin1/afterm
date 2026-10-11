@@ -268,6 +268,20 @@ Tauri writes MSI and per-user NSIS installers beneath `src-tauri/target/release/
 included `azure-pipelines.yml` builds on a hosted Windows Server 2025 agent, caches the cargo
 registry, the cargo build output and npm's download cache, and skips artifacts on pull requests.
 
+### GitHub Actions
+
+`.github/workflows/build.yml` does the same on a GitHub-hosted Windows Server 2025 runner, with the
+same two switches. Run it from the repository's **Actions** tab (*Build ▸ Run workflow*), or from
+the command line:
+
+```bash
+gh workflow run build.yml -f build_installers=false -f run_tests=false   # the fast lane
+```
+
+Each run publishes `afterm-exe` and, with installers on, `afterm-windows` as downloadable
+artifacts. Pushing a tag like `v1.0.1` runs the full build and attaches the executable and both
+installers to a GitHub Release for that tag.
+
 Neither the executable nor the installers are signed. Windows code signing needs a certificate
 issued to a validated organisation, and since June 2023 every new one has to live on FIPS-140-2
 hardware or a cloud signing service — so there is no self-signed route that SmartScreen or Chrome

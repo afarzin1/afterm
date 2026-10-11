@@ -1,0 +1,109 @@
+[package]
+name = "afterm"
+version = "1.0.0"
+description = "A fast, focused terminal for Windows"
+authors = ["afterm contributors"]
+license = "MIT"
+repository = "https://github.com/afarzin1/afterm"
+edition = "2021"
+
+[lib]
+name = "afterm_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Right-click paste needs the clipboard from the native side: WebView2 treats a
+# `navigator.clipboard` read as a permission request and prompts for it, which
+# is not something to put in front of every paste. `default-features = false`
+# drops arboard's image support, whose JPEG, TIFF and colour-management crates
+# would be the largest thing in this manifest. Image paste does not need it: it
+# reads the PNG the copying program left, through `clipboard-win` below.
+arboard = { version = "3", default-features = false }
+base64 = "0.22"
+dirs = "6.0.0"
+# Encoding a clipboard bitmap for the host when the program that copied it
+# offered no PNG of its own (`clipimage.rs`). The version Tauri already builds.
+png = "0.18"
+portable-pty = "0.9"
+# Unguessable temporary names for the OpenSSH transport's uploads, and a key
+# pair for the in-process test host. Nothing new in the build: russh already
+# depends on this exact version, so this only says out loud that afterm's own
+# code draws from it too.
+rand = "0.10.2"
+# russh is pre-1.0 and its API moves between patch releases — the spike hit
+# seven compile errors going from a from-memory implementation to 0.63.2. Both
+# are pinned exactly so an upgrade is a deliberate change with its own test run,
+# never something a `cargo update` does quietly underneath the transport.
+russh = "=0.63.2"
+russh-sftp = "=2.4.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.151"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2.7.3"
+thiserror = "2"
+# Already in the tree through Tauri, named here because `links.rs` parses what
+# the terminal asks to open, and a hand-rolled parser is where that goes wrong.
+url = "2"
+# The same tokio Tauri already runs on: `tauri::async_runtime` is a thin wrapper
+# over it, so async commands and russh share one runtime rather than nesting a
+# second one inside the first.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+# A remembered password is wiped from afterm's own buffers when the buffer is
+# dropped. It is not a promise that every copy is gone — russh and the webview
+# make their own, and neither offers to erase them — only that the ones this
+# code owns are not left lying in freed memory.
+zeroize = "1"
+
+# Not used directly. russh's default crypto backend assembles its x86_64 Windows
+# build with NASM, which is not on the Azure agent and not on a Linux box doing
+# `npm run check:windows`. `prebuilt-nasm` ships the assembled objects instead,
+# and feature unification applies it to russh's copy.
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
+
+# The title bar is the one piece of afterm's window that Windows draws, and
+# `DwmSetWindowAttribute` is how it is told what colour to draw it. Pinned to
+# the version Tauri itself exposes, because `WebviewWindow::hwnd()` returns
+# that crate's `HWND` and a second copy of the crate would be a second,
+# incompatible type of the same name.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# The credential store, which is the whole of the remembered-password feature.
+# `keyring-core` is the interface; the store crate beside it is one platform's
+# implementation of it, and is the only line that platform costs. macOS is
+# `apple-native-keyring-store` in a `cfg(target_os = "macos")` block of its
+# own when it comes, and nothing above `secrets.rs` changes when it does.
+keyring-core = "1"
+windows-native-keyring-store = "1"
+# An image on the clipboard, read as the bytes it was copied as (`clipimage.rs`).
+# Already in the build as arboard's own Windows backend, at this version.
+clipboard-win = { version = "5.3.1", features = ["std"] }
+
+
+# Iteration speed. Full debug info is the single largest cost when relinking the
+# Windows binary, and afterm is debugged through the webview inspector rather
+# than a native debugger, so line tables are enough to keep panics readable.
+[profile.dev]
+debug = "line-tables-only"
+incremental = true
+
+# Dependencies are compiled once and rarely change; optimising them keeps the
+# debug build usable without slowing down rebuilds of afterm's own code.
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+# No LTO, which is not the usual default and is worth the measurement that
+# produced it. Builds 221 and 223 differ in this line and nothing else: thin
+# LTO put the release build at 7.4 minutes and afterm.exe at 15.83 MB, and
+# without it the build is 3.3 minutes and the executable 15.53 MB. Thin LTO
+# with codegen-units = 16 inlines more than it folds away here, so it was
+# costing four minutes a build to produce a binary 2% larger. Runtime speed is
+# the axis that was not measured; afterm's Rust is I/O plumbing and its
+# throughput ceiling is in the webview, which is why this was the trade to
+# take. Re-measure before changing it back.
+[profile.release]
+lto = false
+strip = true

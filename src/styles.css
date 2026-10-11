@@ -1,0 +1,643 @@
+/* JetBrains Mono ships with afterm rather than being looked up on the host, so
+   the terminal renders identically on a fresh Windows install with no font
+   installation step. Licensed under the SIL Open Font License 1.1; see
+   fonts/LICENSE-jetbrains-mono.txt. */
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 400; font-display: block; src: url("./fonts/jetbrains-mono.ttf") format("truetype"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 700; font-display: block; src: url("./fonts/jetbrains-mono-bold.ttf") format("truetype"); }
+@font-face { font-family: "JetBrains Mono"; font-style: italic; font-weight: 400; font-display: block; src: url("./fonts/jetbrains-mono-italic.ttf") format("truetype"); }
+@font-face { font-family: "JetBrains Mono"; font-style: italic; font-weight: 700; font-display: block; src: url("./fonts/jetbrains-mono-bold-italic.ttf") format("truetype"); }
+
+:root {
+  /* One face for the whole application, chrome included. */
+  font-family: "JetBrains Mono", Consolas, "Courier New", monospace;
+  font-synthesis: none; color-scheme: dark;
+  /* Every colour is a custom property, and `theme.ts` sets them on this
+     element before the first render. Only the two the browser paints before
+     any script has run are declared here, so a slow first paint shows a dark
+     ground rather than white. */
+  --bg: #1a202c; --text: #e6ebf2;
+  color: var(--text); background: var(--bg);
+
+  /* The file pane and the status bar are drawn against a 1080p panel. A denser
+     one puts the same CSS pixel on less glass, so `scale.ts` sets this from
+     the display's width — already in CSS pixels, so a panel Windows has
+     scaled itself reports its scaled width and is left at 1. Sizes that have
+     to grow together are expressed through it: type, the rows it sits in, the
+     icons beside it, and the pane's own width, or bigger text would only
+     crowd a pane that stayed put. Declared here so a first paint before the
+     script runs is merely unscaled rather than broken. */
+  --ui-scale: 1;
+  --ui-text-tiny: calc(9px * var(--ui-scale));
+  --ui-text-small: calc(10px * var(--ui-scale));
+  --ui-text-body: calc(12px * var(--ui-scale));
+  --ui-text-status: calc(11px * var(--ui-scale));
+  --ui-pane-width: calc(268px * var(--ui-scale));
+  --ui-pane-icon: calc(15px * var(--ui-scale));
+  /* A tab starts at the width it would like and gives ground as more join it,
+     which is how every browser does it. The floor is what still holds an icon,
+     a few characters of name, the state dot and the close. */
+  --ui-tab-width: calc(240px * var(--ui-scale));
+  --ui-tab-min: calc(104px * var(--ui-scale));
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 760px; min-height: 520px; overflow: hidden; background: var(--bg); }
+button, input { font: inherit; }
+button { color: inherit; }
+/* No custom title bar: the window is all workspace. Dragging is handled by the
+   native frame, plus any workspace tab strip that touches the top edge. */
+.app-shell { height: 100vh; display: grid; grid-template-rows: 1fr; background: var(--bg); }
+/* A row rather than an overlay, and only when there is one: the machine is
+   missing something afterm cannot work without, which is a state and not an
+   event, so it takes space instead of floating over the thing it is about. */
+.app-shell.with-banner { grid-template-rows: auto 1fr; }
+.missing-client { display: flex; align-items: flex-start; gap: 11px; padding: 12px 14px; background: var(--raise); border-bottom: 1px solid var(--raise-2); }
+.missing-client > svg { flex: 0 0 auto; margin-top: 1px; color: var(--warn); width: calc(15px * var(--ui-scale)); height: calc(15px * var(--ui-scale)); }
+.missing-client-body { flex: 1; min-width: 0; }
+.missing-client-body strong { display: block; font-size: 11px; font-weight: 590; color: var(--warn); }
+.missing-client-body p { margin: 6px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.missing-client-body code { font-family: "JetBrains Mono", Consolas, monospace; color: var(--text-3); }
+.missing-client-command { display: block; margin-top: 7px; overflow-x: auto; white-space: nowrap; border: 1px solid var(--raise-2); border-radius: 4px; background: var(--bg); padding: 6px 8px; font-size: 10px; color: var(--bright) !important; }
+.missing-client-aside { color: var(--faint) !important; }
+.missing-client-actions { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; }
+.missing-client-actions button { display: flex; align-items: center; gap: 7px; white-space: nowrap; border: 1px solid var(--raise-2); border-radius: 6px; background: var(--bg); padding: 6px 10px; font-size: 10px; cursor: pointer; }
+.missing-client-actions button:hover:not(:disabled) { background: var(--raise-2); color: var(--bright); }
+.missing-client-actions button:disabled { color: var(--faint); cursor: default; }
+.icon-button { border: 0; background: transparent; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 6px; color: var(--muted); cursor: pointer; }.icon-button:hover { background: var(--raise-2); color: var(--bright); }
+.workspace { min-height: 0; display: flex; }
+.sidebar { width: var(--ui-pane-width); flex: 0 0 var(--ui-pane-width); min-height: 0; display: flex; flex-direction: column; background: var(--menu); transition: width .18s ease, flex-basis .18s ease; overflow: hidden; }
+.sidebar.closed { width: 0; flex-basis: 0; border: 0; }.sidebar-top { min-width: var(--ui-pane-width); height: calc(45px * var(--ui-scale)); display: flex; align-items: center; padding: 8px; }
+/* `margin-left: auto` rather than a spacer: with no session there is no host
+   on this row, and the button still belongs at its right edge. */
+.collapse { margin-left: auto; }
+
+/* Files ------------------------------------------------------------------ */
+/* The host, on the sidebar's own top row beside the collapse button. It had a
+   row to itself under a FILES title; both are gone and the listing starts that
+   much higher. `min-width: 0` so a long name ellipsizes rather than pushing
+   the button off the pane. */
+/* Sized off `--ui-scale` like everything else on this row. The row's own
+   height already was, so on a 4K panel it grew and the host on it did not —
+   the address ended up small in a bar with space above and below it. The
+   status bar prints the same host at `--ui-text-status`, and this is the same
+   fact at the same size. */
+.path { flex: 1; min-width: 0; display: flex; align-items: center; gap: calc(6px * var(--ui-scale)); padding: 0 calc(7px * var(--ui-scale)); color: var(--muted); font-size: var(--ui-text-status); }
+/* The icon carries a `size` attribute from lucide, which is a fixed pixel
+   width. Overridden here for the same reason the status bar overrides its
+   own: an attribute cannot see the scale. */
+.path svg { flex: 0 0 auto; width: calc(13px * var(--ui-scale)); height: calc(13px * var(--ui-scale)); }
+.path > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The path gets lines of its own — two of them — and reads at a size worth
+   reading. It was the last thing on a crowded row before, in the smallest type
+   in the pane, which is the opposite of its importance: it is the answer to
+   "where am I". Two lines are held open whether or not the path needs them, so
+   the list below does not jump every time you walk into a longer name.
+
+   Breaking is allowed only where the markup put a <wbr>, which is after a
+   separator. Each piece between them is nowrap, and that is the part that
+   matters: left alone a browser breaks at a hyphen, so `customer-integrations`
+   would be split down the middle.
+
+   The box is exactly two lines, always. A path that needs more than two is cut
+   from the front instead of trailed off at the end — the component drops one
+   piece at a time and puts `..` in their place, so what survives is the tail,
+   which is the part being read. Nothing is lost to a clip: the whole path is
+   on the tooltip, and the head that went is exactly what `..` says it is.
+
+   Both axes still scroll, for the one case neither wrapping nor eliding can
+   answer: a single name wider than the pane, with nowhere in it to break. A
+   classic horizontal scrollbar is laid inside the box and takes its height out
+   of the content, so the vertical bar is what keeps the second line reachable
+   rather than painted over. Overlay scrollbars, which is what a Mac and a
+   headless browser have, cost nothing and neither bar appears. */
+.path-full { padding: 4px 12px 8px; color: var(--text); font-size: 12px; font-weight: 500; letter-spacing: -.1px; line-height: 1.45; min-width: 268px; height: calc(2 * 1.45em + 10px); overflow: auto; scrollbar-width: thin; scrollbar-color: var(--raise-2) transparent; }
+.path-full span { white-space: nowrap; }
+/* Five controls in a 268px pane: the gap and the icon-only buttons are a step
+   tighter than they were, or the row spends the pane's right padding. */
+.file-toolbar { display: flex; gap: 4px; padding: 8px; min-width: var(--ui-pane-width); }
+/* Square, like Refresh at the other end of the row: an icon with no label. */
+.file-toolbar .square { padding: 4px; }
+.file-toolbar button { display: flex; gap: 6px; align-items: center; border: 1px solid var(--raise-2); border-radius: 5px; padding: 5px 8px; background: var(--raise); color: var(--muted); font-size: var(--ui-text-small); cursor: pointer; }
+.file-toolbar button:hover:not(:disabled), .file-more.open > button { color: var(--text); border-color: var(--raise); }
+.file-toolbar button:disabled { opacity: .4; cursor: not-allowed; }
+/* At the far end, and the menu hangs from its right edge so it stays inside
+   the pane, which clips. The strip above the menu is the bridge the pointer
+   crosses to reach it without the hover ending on the way. */
+.file-more { position: relative; margin-left: auto; display: flex; }
+.file-more-menu { position: absolute; top: 100%; right: 0; z-index: 5; min-width: calc(150px * var(--ui-scale)); margin-top: 4px; padding: 4px; display: flex; flex-direction: column; gap: 1px; border: 1px solid var(--raise-2); border-radius: 6px; background: var(--menu); box-shadow: 0 6px 18px var(--shadow-soft); }
+.file-more-menu::before { content: ""; position: absolute; left: 0; right: 0; top: -5px; height: 5px; }
+.file-toolbar .file-more-menu button { width: 100%; border: 0; background: transparent; padding: 6px 8px; white-space: nowrap; }
+.file-toolbar .file-more-menu button:hover { background: var(--raise); color: var(--text); }
+.file-list { min-width: var(--ui-pane-width); padding: 0 6px; overflow-y: auto; flex: 1; scrollbar-width: thin; scrollbar-color: var(--raise-2) transparent; }
+/* Files are over the pane and would land here. A shade, not an outline: the
+   window tells one surface from another by ground everywhere else too. */
+.file-list.dropping { background: var(--accent-surface); }
+.file-list.dropping .file-list-head { background: var(--accent-surface); }
+.file-list-head, .file-row { display: grid; grid-template-columns: 1fr calc(60px * var(--ui-scale)); align-items: center; width: 100%; }
+.file-list-head { padding: 5px 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .7px; font-size: var(--ui-text-tiny); position: sticky; top: 0; background: var(--menu); }
+.file-row { position: relative; height: calc(30px * var(--ui-scale)); padding: 0 8px; border: 0; background: transparent; color: var(--text-2); border-radius: 5px; font-size: var(--ui-text-body); text-align: left; cursor: default; }
+/* A row being renamed carries the same input the tabs and the host list use. */
+.file-row .tab-rename { width: 100%; font-size: var(--ui-text-body); }
+/* Over the size rather than beside the name: reserving a column for them would
+   take the width off every name in the pane to serve one row at a time. */
+.file-row .row-actions { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); display: flex; gap: 1px; opacity: 0; }
+.file-row .row-actions > span { width: calc(22px * var(--ui-scale)); height: calc(22px * var(--ui-scale)); display: grid; place-items: center; border-radius: 4px; color: var(--muted); }
+.file-row:hover .row-actions { opacity: 1; }
+.file-row:hover small { opacity: 0; }
+.file-row .row-actions > span:hover { background: var(--raise-2); color: var(--bright); }
+.file-row .row-actions > .delete:hover { color: var(--danger); }
+/* A remote delete has no bin to fish it back out of, so the row asks first.
+   The name gives up the width the two answers need, and keeps its ellipsis. */
+.file-row.confirming { grid-template-columns: 1fr auto; background: var(--raise); }
+.file-row .confirm { display: flex; gap: 4px; }
+.file-row .confirm button { border: 1px solid var(--raise-2); border-radius: 4px; padding: 3px 7px; background: var(--menu); color: var(--muted); font-size: var(--ui-text-small); cursor: pointer; }
+.file-row .confirm button:hover { color: var(--text); }
+.file-row .confirm button.danger { color: var(--danger); border-color: var(--danger); }
+.file-row.navigable { cursor: pointer; }
+.file-row:hover { background: var(--raise); }
+.file-row.selected { background: var(--raise); }
+.file-row > span { display: flex; align-items: center; gap: 7px; overflow: hidden; }
+.file-row > span > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-row svg { flex: 0 0 auto; width: var(--ui-pane-icon); height: var(--ui-pane-icon); color: var(--muted); }
+.file-row.directory svg { color: var(--blue); fill: var(--blue-fill); }
+.file-row.link svg { color: var(--cyan); }
+.file-row small { color: var(--muted-2); text-align: right; font-size: var(--ui-text-small); }
+.pane-note { padding: 18px 14px; color: var(--muted); font-size: 10px; line-height: 1.7; min-width: 268px; }
+.pane-note strong { display: block; color: var(--text-2); font-size: 11px; margin-bottom: 5px; font-weight: 550; }
+.pane-note.error strong { color: var(--danger); }
+.pane-note code { color: var(--text-2); background: var(--raise); padding: 1px 4px; border-radius: 3px; font-size: 9px; }
+.pane-note button { margin-top: 10px; border: 1px solid var(--raise); background: var(--raise); color: var(--text-2); border-radius: 5px; padding: 6px 10px; font-size: 10px; cursor: pointer; }
+.pane-note .confirm { display: flex; gap: 6px; }
+.pane-note .confirm button.danger { color: var(--danger); border-color: var(--danger); }
+.pane-note button:hover { border-color: var(--raise-2); }
+.pane-note.transfer strong { color: var(--text-2); }
+.pane-note.transfer progress { width: 100%; height: 4px; margin-top: 8px; accent-color: var(--accent-bright); }
+
+/* Hosts ------------------------------------------------------------------ */
+/* The list lives in the connect dialog now. It is what scrolls when there are
+   more hosts than fit; the note under it and the buttons below stay put. It
+   takes focus itself when the tab opens, because nothing in it is a field and
+   the terminal behind the dialog would otherwise still be holding the keys. */
+.host-list { max-height: 47vh; overflow-y: auto; outline: none; margin: 0 -6px; padding: 2px 6px 14px; scrollbar-width: thin; scrollbar-color: var(--raise-2) transparent; }
+.section-label { display: flex; align-items: center; gap: 4px; color: var(--muted-2); font-size: 9px; letter-spacing: .8px; padding: 4px 6px 8px; }
+.host-list .host { width: 100%; display: flex; align-items: center; gap: 9px; text-align: left; border: 1px solid transparent; background: transparent; border-radius: 7px; padding: 8px; cursor: pointer; }
+.host-list .host:hover { background: var(--raise); }
+.host-list .host:focus-visible { outline: none; border-color: var(--accent); }
+.host-list .host > span:nth-child(2) { display: flex; flex-direction: column; gap: 2px; overflow: hidden; flex: 1; }
+.host-list strong { font-size: 11px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.host-list small { color: var(--muted); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A row mid-rename keeps the button's shape so the list does not jump, and
+   keeps its address visible so it is clear which host is being named. */
+.host-list .host.renaming { padding: 8px; background: var(--raise); }
+.host-list .host.renaming .tab-rename { width: 100%; font-size: 11px; }
+.host-list .forget { opacity: 0; border: 0; background: transparent; color: var(--muted); padding: 3px; border-radius: 4px; display: grid; place-items: center; cursor: pointer; }
+.host-list .host:hover .forget { opacity: 1; }
+.host-list .forget:hover { background: var(--raise-2); color: var(--bright); }
+/* The key that opens this host, written where the status dot used to sit: a
+   dot said the row was a host, which the row already said. A host past the
+   ninth answers to no key and carries the plain server mark instead. */
+.host-key { flex: 0 0 auto; width: 21px; height: 21px; display: grid; place-items: center; border: 1px solid var(--raise-2); border-radius: 5px; background: var(--raise); color: var(--muted); font: 600 10px "JetBrains Mono", Consolas, monospace; }
+.host:hover .host-key { border-color: var(--accent); color: var(--accent-bright); }
+/* The one permanent control in the sidebar, and the only text in the bottom
+   left corner. It reads at the status bar's size, so the two ends of the
+   window's bottom row are set in the same type rather than the left one being
+   two steps smaller than the right. */
+.sidebar-footer { margin-top: auto; min-width: var(--ui-pane-width); padding: 7px; }
+.sidebar-footer button { width: 100%; border: 0; background: transparent; display: flex; align-items: center; gap: 8px; padding: 7px 8px; color: var(--muted); border-radius: 5px; font-size: var(--ui-text-status); cursor: pointer; text-align: left; }
+.sidebar-footer button:hover:not(:disabled) { color: var(--text); background: var(--raise); }
+.sidebar-footer button:disabled { opacity: .38; cursor: not-allowed; }
+
+/* Terminal --------------------------------------------------------------- */
+.terminal-region { flex: 1; min-width: 0; display: grid; grid-template-rows: 1fr calc(27px * var(--ui-scale)); }
+.workspace-grid { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg); }
+/* No outline. Workspaces that touch are told apart by standing on different
+   grounds, which costs a pane nothing when it is the only one — a lone
+   workspace is the plain ground, and the window is one surface again. */
+.workspace-frame { position: absolute; z-index: 3; pointer-events: none; }
+.tabbar { min-width: 0; height: calc(35px * var(--ui-scale)); display: flex; background: var(--bg); border-bottom: 1px solid var(--raise-2); pointer-events: auto; -webkit-user-select: none; user-select: none; }
+/* :not(.active) because this selector outranks `.tab.active`, which would
+   otherwise lose its lift on a shaded pane. */
+.workspace-frame.shade-1 .tabbar, .workspace-frame.shade-1 .tab:not(.active) { background: var(--bg-alt); }
+.workspace-frame.shade-2 .tabbar, .workspace-frame.shade-2 .tab:not(.active) { background: var(--bg-alt-2); }
+/* Capped at the bar, so once the tabs no longer fit they give ground rather
+   than the strip growing past it. */
+.tabs { min-width: 0; max-width: 100%; display: flex; overflow: hidden; }
+/* A definite `width` rather than a flex basis, which looks equivalent and is
+   not: a flex container's automatic size is built from its items' content
+   widths, and a basis does not feed it. With a basis the strip measured the
+   longest name and every tab came out that wide — narrow with one tab open and
+   wider with seven, which is backwards. A width feeds it, so tabs open at the
+   width they want and `flex-shrink` takes it back as more of them arrive. */
+.tab { position: relative; width: var(--ui-tab-width); flex: 0 1 auto; min-width: var(--ui-tab-min); display: flex; align-items: center; gap: 7px; padding: 0 8px 0 11px; border: 0; background: var(--bg); color: var(--muted); font-size: var(--ui-text-small); cursor: pointer; }
+.tab.active { color: var(--bright); background: var(--raise); }
+/* The whole affordance for dragging a tab along its strip: the tab travels
+   with the pointer, so there is nothing to draw and no ghost to follow. */
+.tab:active { cursor: grabbing; }
+.workspace-frame:not(.focused) .tab.active { color: var(--text-3); }
+/* Which workspace has the keyboard, now that no ring says so. On the tab
+   rather than around the pane: it is the one mark that reads without drawing
+   an edge, and it doubles as the active-tab indicator. */
+.tab.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: transparent; }
+.workspace-frame.focused .tab.active::after { background: var(--accent); }
+
+.tab > span:nth-of-type(1) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; text-align: left; }
+.state { width: calc(5px * var(--ui-scale)); height: calc(5px * var(--ui-scale)); border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
+.state.connected { background: var(--accent); box-shadow: 0 0 6px var(--accent-glow); }
+.state.error, .state.lost { background: var(--danger); box-shadow: 0 0 6px var(--danger-glow); }
+/* Something in the tab is waiting for you — an agent done with its turn, a
+   bell. Its own colour, because green already means "connected" and red "gone",
+   and its own shape, which is what reads from across a full strip. It glows a
+   few times and then holds: a tab that flashes until it is looked at is a tab
+   that gets closed instead. */
+.tab .waiting { flex: 0 0 auto; display: flex; color: var(--warn); animation: waiting-pulse 1.6s ease-out 3; }
+.tab .waiting svg { width: calc(13px * var(--ui-scale)); height: calc(13px * var(--ui-scale)); }
+.tab.attention { color: var(--bright); }
+@keyframes waiting-pulse {
+  from { filter: drop-shadow(0 0 0 var(--warn)); }
+  30% { filter: drop-shadow(0 0 4px var(--warn)); }
+  to { filter: drop-shadow(0 0 0 transparent); }
+}
+.tab-rename { flex: 1; min-width: 0; border: 1px solid var(--accent); border-radius: 3px; background: var(--bg); color: var(--bright); padding: 1px 4px; outline: none; font-family: "JetBrains Mono", Consolas, monospace; font-size: var(--ui-text-small); }
+/* Visible on every tab, not only the hovered one: the close was the one
+   control you had to go looking for. Dimmed at rest so a row of them stays
+   quieter than the names it sits beside, full strength under the pointer. */
+.tab-close { opacity: 0.55; padding: 2px; border-radius: 3px; display: grid; place-items: center; }
+.tab-close svg { width: calc(12px * var(--ui-scale)); height: calc(12px * var(--ui-scale)); }
+.tab:hover .tab-close, .tab.active .tab-close, .tab-close:hover { opacity: 1; }
+.tab-close:hover { background: var(--raise-2); }
+.new-tab { display: flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--muted); padding: 0 11px; font-size: 10px; white-space: nowrap; cursor: pointer; }
+.new-tab:hover { color: var(--text); background: var(--raise); }
+.tabbar .zoomed { display: flex; align-items: center; gap: 5px; margin: 6px 8px 6px auto; border: 1px solid var(--accent-line); border-radius: 5px; background: var(--accent-surface); color: var(--accent-text); padding: 0 8px; font-size: 10px; white-space: nowrap; cursor: pointer; }
+.tabbar .zoomed:hover { color: var(--bright); }
+.sidebar-open { margin: 6px 2px 0 5px; }
+/* Clips the terminal to its grid row: xterm rounds its row count to whole
+   cells, and the remainder would otherwise paint over the status bar. */
+.terminal-pane { position: absolute; z-index: 1; visibility: hidden; overflow: hidden; background: var(--bg); }
+.terminal-pane.shade-1 { background: var(--bg-alt); }
+.terminal-pane.shade-2 { background: var(--bg-alt-2); }
+.terminal-pane.active { visibility: visible; }
+.workspace-divider { position: absolute; z-index: 4; touch-action: none; outline: none; }
+.workspace-divider.columns { cursor: col-resize; }
+.workspace-divider.rows { cursor: row-resize; }
+.workspace-divider::after { content: ""; position: absolute; background: transparent; transition: background .12s ease; }
+.workspace-divider.columns::after { top: 0; bottom: 0; left: 2px; width: 2px; }
+.workspace-divider.rows::after { left: 0; right: 0; top: 2px; height: 2px; }
+.workspace-divider:hover::after, .workspace-divider:focus::after { background: var(--accent); }
+/* Its own stacking context, so everything xterm layers inside it — the command
+   band is a decoration at z-index 6, the overview ruler 8 — stays under what
+   the pane puts over the terminal: the lost-connection popup, the find bar,
+   the pinned command. Without it those z-indexes competed with the popup's 3,
+   and a highlighted command drew straight through it.
+   `content-box` because the fit addon sizes the terminal from this element's
+   computed width and height, and under the global `border-box` those include
+   the padding: every terminal came out two or three columns and a row larger
+   than its box, and the last columns ran past the edge of the pane — plainest
+   in two workspaces side by side, where the edge is a neighbour's text. */
+.terminal-surface { position: absolute; inset: 0; z-index: 0; box-sizing: content-box; padding: 10px 14px 6px 14px; }
+.terminal-surface .xterm { height: 100%; }
+.terminal-surface .xterm-viewport { scrollbar-width: thin; scrollbar-color: var(--raise-2) transparent; }
+.terminal-surface .xterm-screen { padding-top: 2px; }
+/* The band behind a line the user typed. It carries no marker of its own: a
+   leading edge here reads as a second cursor sitting inside the highlight.
+   --band-from is where the row's text ends; the gradient fills only from there
+   to the right edge, because this element is drawn over the glyphs and xterm
+   has already painted the band beneath them. */
+.terminal-surface .typed-line {
+  left: 0 !important; width: 100% !important; box-shadow: none; --band-from: 100%;
+  background: linear-gradient(to right, transparent 0 var(--band-from), var(--band) var(--band-from) 100%);
+}
+
+/* Over the terminal, not instead of it: whatever was on screen when the
+   connection went is usually why it went, so it stays readable behind this. */
+.session-lost { position: absolute; inset: 0; z-index: 3; display: grid; place-items: center; background: var(--scrim-soft); }
+.session-lost > div { min-width: 300px; border: 1px solid var(--raise-2); border-radius: 10px; background: var(--bg); box-shadow: 0 18px 60px var(--shadow); padding: 18px 20px; }
+.session-lost strong { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 590; color: var(--danger); }
+.session-lost p { margin: 7px 0 0; color: var(--muted); font-size: 11px; }
+.session-lost .session-lost-retry { color: var(--text); font-variant-numeric: tabular-nums; }
+.session-lost .session-lost-reason { max-width: 360px; font: 10px/1.4 "JetBrains Mono", Consolas, monospace; overflow-wrap: anywhere; }
+.session-lost-actions button:disabled { opacity: 0.55; cursor: default; }
+.session-lost-actions { display: flex; gap: 8px; margin-top: 16px; }
+.session-lost-actions button { display: flex; align-items: center; gap: 8px; border-radius: 6px; padding: 7px 11px; font-size: 10px; cursor: pointer; }
+.session-lost-actions kbd { font: 9px monospace; border-radius: 3px; padding: 1px 5px; background: #0003; }
+.session-lost-actions .secondary kbd { background: var(--raise); }
+
+/* Sits over the top-right of the terminal rather than taking a row of its own,
+   for the same reason the pinned command does: a bar that changes the
+   terminal's height reflows every row underneath it. */
+.find-bar { position: absolute; top: 6px; right: 14px; z-index: 4; display: flex; align-items: center; gap: 4px; border: 1px solid var(--raise-2); border-radius: 7px; background: var(--raise); box-shadow: 0 8px 24px var(--shadow); padding: 4px 5px 4px 9px; }
+.find-bar input { width: 190px; border: 0; background: transparent; color: var(--text); outline: none; font-size: 11px; }
+.find-bar > span { min-width: 62px; color: var(--muted-2); font-size: 9px; text-align: right; white-space: nowrap; }
+.find-bar > span.none { color: var(--danger); }
+.find-bar button { display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
+.find-bar button:hover:not(:disabled) { background: var(--raise-2); color: var(--text); }
+.find-bar button:disabled { opacity: .35; cursor: default; }
+
+/* The command the user last typed, held at the top of the viewport once it has
+   scrolled out of sight. Clicking it scrolls back to the real line. */
+/* Overlaid rather than stacked above the terminal: giving it its own row would
+   change the terminal's height every time the pin appeared or disappeared,
+   forcing a reflow and leaving rows rendered underneath the status bar. */
+.pinned-command { position: absolute; top: 0; left: 0; right: 0; z-index: 2; display: flex; align-items: center; gap: 8px; width: 100%; border: 0; border-bottom: 1px solid var(--band-line); background: linear-gradient(180deg, var(--band) 0%, var(--band-deep) 100%); color: var(--bright); padding: 6px 14px; font: 11px/1.4 "JetBrains Mono", Consolas, monospace; text-align: left; cursor: pointer; box-shadow: 0 4px 12px var(--shadow-soft); }
+/* Where a link under the pointer really goes, before it is followed. Below and
+   right of the pointer, so the link itself stays visible. */
+.link-hint { position: absolute; z-index: 4; transform: translate(10px, 18px); max-width: min(560px, 70%); display: flex; flex-direction: column; gap: 3px; border: 1px solid var(--raise-2); border-radius: 6px; background: var(--raise); box-shadow: 0 8px 24px var(--shadow); padding: 6px 9px; color: var(--muted); font-size: 10px; pointer-events: none; }
+.link-hint kbd { font: 9px monospace; border-radius: 3px; padding: 1px 4px; background: var(--raise-2); color: var(--text); }
+.link-hint .uri { color: var(--text); font: 10px/1.35 "JetBrains Mono", Consolas, monospace; overflow-wrap: anywhere; }
+.link-hint .refused { color: var(--danger); }
+/* Quick select. Over the terminal rather than in it, like the find bar: the
+   screen underneath is left exactly as it was. Each match is tinted, and its
+   label sits over its first characters, which are the ones it replaces. */
+.quick-select { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+/* A tint and an underline, never a fill: the text under it is the thing being
+   chosen and has to stay readable. */
+.quick-hit { position: absolute; background: color-mix(in srgb, var(--warn) 16%, transparent); box-shadow: inset 0 -2px 0 var(--warn); border-radius: 2px; }
+.quick-label { position: absolute; display: grid; place-items: center; min-width: 1.4em; padding: 0 3px; border-radius: 3px; background: var(--warn); color: var(--bg); font: 700 11px "JetBrains Mono", Consolas, monospace; box-shadow: 0 1px 4px var(--shadow); }
+.quick-label.out { display: none; }
+.quick-hint { position: absolute; right: 14px; bottom: 8px; border: 1px solid var(--raise-2); border-radius: 6px; background: var(--raise); color: var(--muted); padding: 4px 9px; font-size: 10px; box-shadow: 0 8px 24px var(--shadow); }
+.pinned-command:hover { background: linear-gradient(180deg, var(--band-line) 0%, var(--band) 100%); }
+.pinned-command svg { flex: 0 0 auto; opacity: .75; }
+.pinned-command span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.terminal-empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--muted); }
+.terminal-empty h2 { margin: 0 0 14px; font-size: 15px; font-weight: 560; color: var(--text-2); }
+.terminal-empty ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; justify-items: start; }
+.terminal-empty li { display: flex; align-items: center; gap: 9px; font-size: 11px; }
+.terminal-empty kbd { min-width: 84px; font: 10px monospace; color: var(--text-2); border: 1px solid var(--raise-2); border-radius: 4px; padding: 3px 7px; background: var(--raise); text-align: center; }
+
+/* Status bar ------------------------------------------------------------- */
+/* The gap is what keeps the two halves from touching. `space-between` alone
+   only spaces them while there is room to spare; at the width where there is
+   not, the session label ran straight into the first reading. Now the readings
+   hold their size and the label is what gives, to an ellipsis. */
+.statusbar { display: flex; align-items: center; justify-content: space-between; gap: calc(20px * var(--ui-scale)); background: var(--bg); color: var(--muted); padding: 0 10px; font-size: var(--ui-text-status); white-space: nowrap; overflow: hidden; }
+.statusbar svg { width: calc(13px * var(--ui-scale)); height: calc(13px * var(--ui-scale)); }
+/* The two icon rows on the left belong in this list and were not in it, which
+   cost two things silently. Their `gap` did nothing, so the spacing beside the
+   session label was whatever the glyphs happened to leave. And `.connection i`
+   — the status light — is an inline element at `width: 6px`, which inline
+   layout ignores: the dot has been zero pixels wide and invisible all along,
+   its `flex: 0 0 auto` the clue that it was always meant to sit in a flex row.
+
+   Named rather than `.status-left > span`, because the other two children are
+   single runs of text that have to be able to end in an ellipsis, and
+   `text-overflow` has nothing to act on inside a flex container. */
+.status-left, .connection, .latency, .metrics, .metrics span { display: flex; align-items: center; }
+.status-left { gap: calc(16px * var(--ui-scale)); min-width: 0; }
+.status-left > span { gap: calc(6px * var(--ui-scale)); min-width: 0; }
+/* The three that may be any length, and so are the three that give. Each
+   truncates in itself rather than the row clipping: `overflow` on the
+   `.connection` span would take the glow off its status dot with it. */
+.who, .transport, .telemetry-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A reading and a button are not text to be trimmed. */
+.latency, .statusbar-action { flex: 0 0 auto; }
+.connection { color: var(--text-3); }
+.connection i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
+.connection.connected i { background: var(--accent); box-shadow: 0 0 7px var(--accent-glow); }
+.connection.error i, .connection.lost i { background: var(--danger); box-shadow: 0 0 7px var(--danger-glow); }
+/* Three spacings, and the difference between them is the whole of the
+   grouping: most air between one metric and the next, less between an icon and
+   the reading it labels, least inside a reading that is one thing said in two
+   parts — a ratio, or the down and up of a link.
+
+   Every one of them used to be five pixels, so a group's own parts sat as far
+   apart as the groups did and the row read as eight unrelated numbers with
+   some icons scattered through it. The arrows had a literal space beside them
+   in the markup as well, which added width nothing here controlled.
+
+   Scaled, because the icons beside them are: a 4K panel draws the same CSS
+   pixel a quarter of the size, and spacing that did not grow with the glyphs
+   would close up exactly where the row is already hardest to read. */
+.metrics { gap: calc(26px * var(--ui-scale)); flex: 0 0 auto; }
+.metrics > span { gap: calc(9px * var(--ui-scale)); }
+.metrics .pair { gap: calc(4px * var(--ui-scale)); }
+.metrics b { color: var(--text); font-weight: 600; }
+.metrics em { color: var(--blue); font-style: normal; }
+.metrics em.up { color: var(--accent-bright); }
+.metrics .unknown { color: var(--faint); }
+
+.telemetry-note { color: var(--muted); font-size: 11px; font-style: italic; }
+/* A refused credential or a rejected host key is not the same kind of quiet as
+   "no data yet", so it does not read the same way. */
+.telemetry-note.auth, .telemetry-note.hostKey { color: var(--warn); font-style: normal; }
+.telemetry-note.unreachable { color: var(--danger); font-style: normal; }
+/* What is carrying files and telemetry. Present whenever there is a transport,
+   so the answer is never a mystery. */
+.transport { color: var(--faint); font-size: 11px; }
+.statusbar-action { border: 1px solid var(--raise-2); background: var(--raise); color: var(--text); border-radius: 4px; padding: 2px 8px; font-size: var(--ui-text-status); cursor: pointer; }
+.statusbar-action:hover { border-color: var(--line); }
+.statusbar-action:disabled { opacity: .6; cursor: default; }
+
+.key-found-head { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+.key-found-head .section-label { padding: 0; }
+.key-list { list-style: none; margin: 6px 0 14px; padding: 0; display: grid; gap: 6px; }
+.key-list li { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 7px; background: var(--raise); }
+.key-list li > span { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.key-list strong { font-size: 11px; font-weight: 550; }
+.key-list small { color: var(--muted); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.key-list .primary { padding: 6px 11px; border-radius: 5px; font-size: 10px; white-space: nowrap; }
+.link-button { border: 0; background: transparent; color: var(--muted); display: inline-flex; align-items: center; gap: 7px; padding: 6px 0; font-size: 10px; cursor: pointer; }
+.link-button:hover { color: var(--text); }
+
+/* The backstop when something throws. Better than a blank window. */
+.crash { display: grid; place-items: center; height: 100vh; background: var(--bg); color: var(--text); padding: 32px; }
+.crash > div { max-width: 460px; }
+.crash h2 { margin: 0 0 10px; font-size: 17px; font-weight: 590; }
+.crash p { color: var(--muted); font-size: 11px; line-height: 1.7; margin: 0 0 14px; }
+.crash pre { background: var(--raise); border: 1px solid var(--raise-2); border-radius: 7px; padding: 12px; font-size: 10px; color: var(--text-2); overflow-x: auto; margin: 0 0 16px; }
+.crash button { border-radius: 6px; padding: 8px 12px; font-size: 10px; cursor: pointer; }
+
+/* Dialogs ---------------------------------------------------------------- */
+.dialog-backdrop { position: fixed; inset: 0; display: grid; place-items: center; background: var(--scrim); backdrop-filter: blur(5px); z-index: 5; }
+.connect-dialog { width: 440px; border: 1px solid var(--raise-2); border-radius: 12px; background: var(--bg); box-shadow: 0 24px 80px var(--shadow); padding: 20px; }
+.dialog-title { display: flex; justify-content: space-between; align-items: flex-start; }
+.eyebrow { color: var(--accent); font-size: 8px; letter-spacing: 1.3px; font-weight: 700; }
+.dialog-title h2 { margin: 5px 0 17px; font-size: 18px; font-weight: 590; letter-spacing: -.3px; }
+/* Two halves of one question — a host already saved, or a new one — told apart
+   by an underline rather than a box, so the tab strip does not read as another
+   row of buttons above the two real ones at the bottom. */
+.dialog-tabs { display: flex; gap: 4px; margin: 0 -20px 16px; padding: 0 16px; box-shadow: inset 0 -1px 0 var(--raise-2); }
+.dialog-tabs button { display: flex; align-items: center; gap: 7px; border: 0; background: transparent; color: var(--muted); border-radius: 6px 6px 0 0; padding: 8px 10px 9px; font-size: 11px; font-weight: 600; cursor: pointer; box-shadow: inset 0 -1px 0 transparent; }
+.dialog-tabs button:hover { color: var(--text-2); }
+.dialog-tabs button.active { color: var(--bright); box-shadow: inset 0 -2px 0 var(--accent-bright); }
+.dialog-tabs b { border-radius: 9px; background: var(--raise); color: var(--muted); padding: 1px 6px; font: 600 9px "JetBrains Mono", Consolas, monospace; }
+.dialog-tabs button.active b { background: var(--accent-surface); color: var(--accent-bright); }
+/* The local shells sit at the far end of the strip, and read as the aside
+   they are: no weight, no underline, and nothing to switch to. */
+.dialog-tabs .tab-gap { flex: 1; }
+.dialog-tabs button.local-shell { color: var(--faint); font-weight: 500; padding-right: 8px; padding-left: 8px; }
+.dialog-tabs button.local-shell:hover { color: var(--text-2); background: var(--raise); }
+.form-grid { display: grid; grid-template-columns: 1fr 100px; gap: 12px; }
+.form-grid label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .6px; }
+.form-grid .span-2 { grid-column: span 2; }
+.form-grid input { width: 100%; border: 1px solid var(--raise-2); background: var(--raise); color: var(--text); border-radius: 6px; padding: 9px 10px; outline: none; font-size: 11px; text-transform: none; letter-spacing: 0; }
+.form-grid input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-ring); }
+.form-error { margin-top: 12px; color: var(--danger); font-size: 10px; }
+.remember { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--muted); font-size: 10px; }
+.remember input { width: 13px; height: 13px; accent-color: var(--accent-bright); }
+.local-note { color: var(--muted); background: var(--bg); border: 1px solid var(--raise-2); border-radius: 7px; padding: 14px; font-size: 11px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.dialog-actions button { border-radius: 6px; padding: 8px 12px; font-size: 10px; cursor: pointer; }
+.secondary { border: 1px solid var(--raise-2); background: transparent; color: var(--muted); }
+.primary { border: 1px solid var(--accent); background: var(--accent-bright); color: var(--accent-ink); font-weight: 700; }
+.primary span { margin-left: 12px; opacity: .65; }
+.auth-dialog { width: 400px; }
+.auth-field { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .6px; }
+.auth-field input { border: 1px solid var(--raise-2); background: var(--raise); color: var(--text); border-radius: 6px; padding: 9px 10px; outline: none; font-size: 11px; text-transform: none; letter-spacing: 0; }
+.auth-field input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-ring); }
+.auth-note { display: flex; align-items: center; gap: 7px; margin: 16px 0 0; color: var(--muted); font-size: 9px; }
+
+.key-dialog p { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 0 0 14px; }
+.key-dialog code { color: var(--text-2); background: var(--raise); padding: 2px 4px; border-radius: 3px; }
+.key-field { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .6px; }
+.key-field textarea { resize: vertical; min-height: 82px; border: 1px solid var(--raise-2); background: var(--raise); color: var(--text); border-radius: 6px; padding: 10px; outline: none; font: 11px/1.5 "JetBrains Mono", Consolas, monospace; }
+.key-field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-ring); }
+.key-status { margin-top: 9px; border-radius: 5px; padding: 8px 9px; font-size: 9px; color: var(--accent-text); background: var(--accent-surface); border: 1px solid var(--accent-line); }
+
+/* What afterm says in the corner, in one column above the status bar. Both
+   kinds end up here and either can be alone, so the column is what holds the
+   position and the messages inside it only stack. */
+.corner-messages { position: fixed; bottom: 38px; right: 14px; z-index: 7; display: flex; flex-direction: column; align-items: flex-end; gap: 7px; pointer-events: none; }
+/* Clickable where the column is not: a notice can carry an error worth
+   selecting and copying out, which it could before this column existed. */
+.toast { pointer-events: auto; max-width: 60ch; border: 1px solid var(--accent-line); border-radius: 5px; background: var(--accent-surface); color: var(--accent-text); padding: 8px 10px; font-size: 10px; }
+/* Quieter than a notice, deliberately: a notice is news, and this is a
+   receipt for something the user just did and watched happen. So it takes the
+   plain raised ground rather than the accent one, and only the tick is
+   coloured. */
+.copied-flash { display: flex; align-items: center; gap: 6px; border: 1px solid var(--raise-2); border-radius: 5px; background: var(--raise); color: var(--text-3); padding: 6px 9px; font-size: 10px; box-shadow: 0 6px 20px var(--shadow-soft); animation: copied-flash 1.4s ease forwards; }
+.copied-flash > svg { color: var(--accent-bright); }
+/* One animation for the whole life of the element, which React unmounts on
+   the same 1400ms: in fast, hold, and fade before it goes, so it never
+   vanishes mid-word. Keep the duration and `COPIED_FLASH_MS` in step. */
+@keyframes copied-flash {
+  from { opacity: 0; transform: translateY(4px); }
+  10% { opacity: 1; transform: translateY(0); }
+  72% { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(2px); }
+}
+/* A corner that appears and disappears is motion nobody asked for. Honour the
+   setting: the message still comes and goes, it just does not travel. */
+@media (prefers-reduced-motion: reduce) {
+  .copied-flash { animation: none; }
+  .tab .waiting { animation: none; }
+}
+
+/* Command palette -------------------------------------------------------- */
+.palette-backdrop { position: fixed; inset: 0; display: grid; place-items: start center; padding-top: 12vh; background: var(--scrim); backdrop-filter: blur(5px); z-index: 6; }
+.palette { width: 520px; max-width: 92vw; border: 1px solid var(--raise-2); border-radius: 12px; background: var(--bg); box-shadow: 0 24px 80px var(--shadow); overflow: hidden; }
+.palette input { width: 100%; border: 0; background: transparent; color: var(--text); padding: 14px 16px; outline: none; font-size: 13px; }
+.palette ul { list-style: none; margin: 0; padding: 6px; max-height: 320px; overflow-y: auto; }
+.palette li { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 6px; color: var(--text-3); font-size: 11px; cursor: pointer; }
+.palette li.active { background: var(--raise); color: var(--bright); }
+.palette li small { margin-left: auto; color: var(--muted-2); font-size: 9px; }
+.palette .empty { padding: 18px 16px; color: var(--muted-2); font-size: 11px; }
+
+/* Settings --------------------------------------------------------------- */
+/* Everything that is not a session: the colour scheme, the font, key
+   installation and the shortcut list.
+   Wide and short rather than narrow and tall. Stacked in one column it ran
+   past the height of the window it opens in and scrolled every time, which
+   put the shortcut list — the half people open this for — below the fold. Two
+   columns fit it in the window afterm opens at, and the scroll stays as the
+   floor for a window shorter than that, with the title and the Done button
+   staying put while the columns move underneath them. */
+.settings-dialog .eyebrow { font-size: 11px; letter-spacing: 1px; }
+.settings-dialog { width: min(760px, calc(100vw - 40px)); display: flex; flex-direction: column; max-height: calc(100vh - 56px); }
+.settings-body { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 0 30px; overflow-y: auto; margin: 0 -20px; padding: 0 20px; scrollbar-width: thin; scrollbar-color: var(--raise-2) transparent; }
+/* A column starts at its first section label, whichever section that is. */
+.settings-column > .section-label:first-child { padding-top: 0; }
+/* Settings reads at the status bar's size. It was built out of 9px and 10px
+   type, which is fine for a label glanced at and too small for a panel read. */
+.settings-body .section-label { padding: 16px 0 7px; font-size: 11px; }
+/* Schemes side by side: there are two of them and the panel is wide now. */
+.theme-picker { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 7px; }
+.theme-picker button { display: flex; align-items: center; gap: 11px; border: 1px solid var(--raise-2); background: var(--raise); color: var(--muted); border-radius: 7px; padding: 9px 10px; text-align: left; cursor: pointer; }
+.theme-picker button.selected { color: var(--text); border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.theme-picker button > span:last-child { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.theme-picker strong { font-size: 11px; font-weight: 550; }
+/* A scheme shown in its own colours rather than described in the current
+   ones: the ground, then the text, accent, directory and input-band tones. */
+.swatch { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; height: 27px; padding: 0 6px; border: 1px solid; border-radius: 5px; }
+.swatch i { width: 7px; height: 7px; border-radius: 50%; }
+/* A switch rather than a checkbox: this one turns a behaviour on, and the
+   row already carries the label. */
+.toggle { flex: 0 0 auto; width: 38px; height: 21px; border: 1px solid var(--raise-2); border-radius: 11px; background: var(--raise); padding: 2px; cursor: pointer; transition: background .15s ease, border-color .15s ease; }
+.toggle span { display: block; width: 15px; height: 15px; border-radius: 50%; background: var(--muted); transition: transform .15s ease, background .15s ease; }
+.toggle.on { background: var(--accent-surface); border-color: var(--accent); }
+.toggle.on span { transform: translateX(17px); background: var(--accent-bright); }
+/* The one checkbox in the interface, and it is asking permission rather than
+   setting a preference — so the label carries the consequence underneath the
+   choice, at the weight of the note it is. */
+/* A saved password on a host row: the accent marks it as state rather than
+   another grey action, and it is the only icon here that is not always
+   present. */
+.host .forget.remembered { color: var(--accent); }
+/* Lit and always visible when on, so the list says which hosts keep their
+   shell without a hover. */
+.host-list .host .forget.keep-shell.on { opacity: 1; color: var(--accent); }
+.auth-remember { display: flex; align-items: flex-start; gap: 9px; margin: 13px 0 0; cursor: pointer; }
+.auth-remember input { flex: 0 0 auto; margin: 1px 0 0; accent-color: var(--accent); width: 13px; height: 13px; cursor: pointer; }
+.auth-remember span { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.auth-remember strong { color: var(--text-2); font-size: 11px; font-weight: 550; }
+.settings-action { display: flex; align-items: center; gap: 7px; border: 1px solid var(--raise-2); background: var(--raise); color: var(--text-2); border-radius: 6px; padding: 7px 10px; font-size: 10px; white-space: nowrap; cursor: pointer; }
+.settings-action:hover:not(:disabled) { border-color: var(--line); color: var(--text); }
+.settings-action:disabled { opacity: .4; cursor: not-allowed; }
+/* Two ways to get the snippet onto a host, side by side, wrapping to the
+   next line rather than squeezing the row when the panel is narrow. */
+.settings-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0; }
+.settings-row:last-of-type { border-bottom: 0; }
+.settings-row label { color: var(--text-2); font-size: 11px; }
+.settings-row p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+/* Not a button: there is nothing left to press once the shell is answering. */
+.settings-state { display: flex; align-items: center; gap: 7px; color: var(--accent); font-size: 10px; white-space: nowrap; padding: 7px 10px; }
+.settings-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.settings-row kbd { font: inherit; background: var(--raise); border: 1px solid var(--raise-2); border-radius: 3px; padding: 0 4px; }
+.stepper { display: flex; align-items: center; gap: 4px; }
+.stepper button { width: 24px; height: 24px; border: 1px solid var(--raise-2); background: var(--raise); color: var(--text-2); border-radius: 5px; cursor: pointer; display: grid; place-items: center; }
+.stepper button:hover:not(:disabled) { border-color: var(--raise-2); }
+.stepper button:disabled { opacity: .35; cursor: not-allowed; }
+.stepper b { min-width: 42px; text-align: center; font: 11px "JetBrains Mono", Consolas, monospace; color: var(--bright); }
+.shortcut-list { list-style: none; margin: 0; padding: 0; }
+/* The long column, so its rows are set close: seventeen of them at eight
+   pixels of air apiece was what made this panel taller than the window. */
+.shortcut-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 0; color: var(--text-3); font-size: 11px; }
+.shortcut-list li:last-child { border-bottom: 0; }
+.shortcut-list kbd { flex: 0 0 auto; white-space: nowrap; font: 11px monospace; color: var(--text-2); border: 1px solid var(--raise-2); border-radius: 4px; padding: 2px 6px; background: var(--bg); }
+
+/* Disk and uptime are the two the bar can do without when it runs out of room.
+   The child combinator matters: `.metrics span` also matches the paired
+   readings inside a group, and the two halves of the network reading are the
+   last two children of their own span — so without it, a narrow window hid the
+   download and upload rates instead. */
+@media (max-width: 900px) {
+  .metrics > span:nth-last-child(-n+2) { display: none; }
+}
+
+/* Below this the two settings columns are narrower than the rows they hold, so
+   they stack and the panel goes back to being one scrolling list. */
+@media (max-width: 620px) {
+  .settings-body { grid-template-columns: 1fr; }
+  .settings-column + .settings-column > .section-label:first-child { padding-top: 16px; }
+}
+
+/* Image preview ---------------------------------------------------------- */
+/* Over the whole window, like a dialog: the file pane is too narrow to look
+   at a picture in. The stage scrolls when the image is shown at its own size. */
+.image-viewer { position: fixed; inset: 0; z-index: 5; display: flex; flex-direction: column; background: var(--scrim); backdrop-filter: blur(5px); }
+.image-viewer header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--bg); border-bottom: 1px solid var(--raise-2); }
+.image-viewer header > div { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.image-viewer header strong { color: var(--bright); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.image-viewer header span { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.image-viewer header button { border: 0; background: transparent; color: var(--muted); padding: 5px; border-radius: 5px; display: grid; place-items: center; cursor: pointer; }
+.image-viewer header button:hover { color: var(--bright); background: var(--raise); }
+.image-stage { flex: 1; min-height: 0; display: grid; place-items: center; padding: 24px 64px; overflow: hidden; }
+.image-stage img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; box-shadow: 0 18px 60px var(--shadow); background: repeating-conic-gradient(var(--raise) 0% 25%, var(--raise-2) 0% 50%) 50% / 16px 16px; }
+.image-stage.actual { overflow: auto; place-items: start center; }
+.image-stage.actual img { max-width: none; max-height: none; cursor: zoom-out; }
+.image-note { color: var(--muted); font-size: 11px; }
+.image-note.failed { color: var(--danger); }
+.image-step { position: absolute; top: 50%; transform: translateY(-50%); border: 1px solid var(--raise-2); background: var(--bg); color: var(--text); border-radius: 50%; width: 38px; height: 38px; display: grid; place-items: center; cursor: pointer; box-shadow: 0 8px 24px var(--shadow); }
+.image-step:hover { color: var(--bright); background: var(--raise); }
+.image-step.previous { left: 14px; }
+.image-step.next { right: 14px; }

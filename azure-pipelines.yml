@@ -1,0 +1,189 @@
+parameters:
+  # Tauri embeds the whole frontend into afterm.exe, so the executable on its
+  # own is a complete app. Queue a run with this off to skip installer
+  # packaging: the run finishes sooner and publishes just the executable, which
+  # you drop over the one you already installed.
+  - name: buildInstallers
+    displayName: Build MSI and NSIS installers
+    type: boolean
+    default: true
+  # The release profile uses thin LTO, so the test binary gets a full LTO link
+  # of its own before the build gets one. Turning this off with the installers
+  # is the fast lane: one link, no test harness, and nothing else changes.
+  - name: runTests
+    displayName: Run the native backend tests
+    type: boolean
+    default: true
+
+# Manual only. This pipeline is the slow loop — minutes per run against a
+# hosted Windows agent — and the fast loops in README.md are what development
+# happens against. Queue it from the Azure DevOps UI when a Windows build or a
+# Windows test run is actually wanted.
+trigger: none
+
+pr: none
+
+pool:
+  vmImage: windows-2025
+
+variables:
+  CARGO_TERM_COLOR: always
+  # Keeps the cache key stable and the fingerprint independent of the agent's
+  # home directory layout.
+  CARGO_HOME: $(Build.SourcesDirectory)\.cargo-home
+  # A pull request only needs to know the tree is sound. Artifacts are built for
+  # everything else, where they are actually consumed.
+  publishArtifacts: $[ne(variables['Build.Reason'], 'PullRequest')]
+  # Inside the workspace so the cache task can reach it. The image's default is
+  # C:\npm\cache, which is outside every path a pipeline is allowed to cache.
+  npm_config_cache: $(Pipeline.Workspace)\.npm
+
+steps:
+  - checkout: self
+    clean: true
+
+  - task: UseNode@1
+    displayName: Use Node.js 22
+    inputs:
+      version: 22.x
+      checkLatest: false
+
+  - powershell: |
+      rustup toolchain install stable-msvc --profile minimal
+      rustup default stable-msvc
+      rustc --version
+      cargo --version
+    displayName: Configure stable Rust
+
+  # Caching is what takes this pipeline from half an hour to a few minutes. The
+  # Rust dependency tree is by far the largest cost — the SSH stack alone brings
+  # a C crypto library of some 1,400 files — and it changes only when Cargo.lock
+  # does, which is what both caches are keyed on.
+  - task: Cache@2
+    displayName: Cache cargo registry
+    inputs:
+      key: 'cargo-home | "$(Agent.OS)" | src-tauri/Cargo.lock'
+      restoreKeys: |
+        cargo-home | "$(Agent.OS)"
+      path: $(Build.SourcesDirectory)\.cargo-home
+
+  # The manifest's fingerprint, taken once and held in a variable for the rest
+  # of the job.
+  #
+  # Cargo.toml belongs in the cache key: a profile change — `lto`, `opt-level`,
+  # `debug` — invalidates every artifact in the target directory without
+  # touching Cargo.lock, so a key that ignored it rebuilt all 580 crates and
+  # then declined to save the result because the exact key had hit. But naming
+  # the file in the key directly does not work either. Something in the build
+  # rewrites Cargo.toml — observed in build 225, where the file hashed to the
+  # checked-out CRLF form at restore and to something else by the post-job
+  # step, while Cargo.lock beside it was untouched. Cache@2 resolves file
+  # patterns at both ends, so the key drifted mid-run and the cache was saved
+  # under a fingerprint no later run would ever compute: an exact-key miss,
+  # forever, and a five-gigabyte upload on every run to go with it.
+  #
+  # A variable is resolved once and cannot drift. Whatever does the rewriting,
+  # this is keyed on the manifest as checked out.
+  - powershell: |
+      $hash = (Get-FileHash src-tauri/Cargo.toml -Algorithm SHA256).Hash
+      Write-Host "##vso[task.setvariable variable=manifestHash]$hash"
+      Write-Host "Cargo.toml as checked out: $hash"
+    displayName: Fingerprint the manifest
+
+  # Keyed on the manifest and the lock file, not on the sources. Including the
+  # sources put a different key on every commit, so the exact key never hit —
+  # and Cache@2 only writes the cache when the exact key misses, which meant
+  # every run restored from a fallback and then spent minutes saving a
+  # multi-gigabyte target directory again. Keyed on these two it hits from the
+  # second run on, and cargo recompiles afterm's own crate, which is the cheap
+  # part.
+  - task: Cache@2
+    displayName: Cache cargo build output
+    inputs:
+      key: 'cargo-target | "$(Agent.OS)" | src-tauri/Cargo.lock | $(manifestHash)'
+      restoreKeys: |
+        cargo-target | "$(Agent.OS)"
+      path: $(Build.SourcesDirectory)\src-tauri\target
+
+  # npm's download cache rather than node_modules. `npm ci` deletes
+  # node_modules before it installs, by design, so caching that directory meant
+  # paying to restore a copy that was thrown away unread and then installing in
+  # full anyway. The tarball cache is what actually saves the install.
+  - task: Cache@2
+    displayName: Cache npm
+    inputs:
+      key: 'npm | "$(Agent.OS)" | package-lock.json'
+      restoreKeys: |
+        npm | "$(Agent.OS)"
+      path: $(npm_config_cache)
+
+  - script: npm ci
+    displayName: Install frontend dependencies
+
+  - script: npm test
+    displayName: Test frontend
+
+  # Types only. The bundle itself is built by Tauri's `beforeBuildCommand`,
+  # which runs the same `npm run build`, so doing it here as well was tsc and
+  # vite twice per run. This keeps the type check on runs that build nothing.
+  - script: npx tsc --noEmit
+    displayName: Type-check frontend
+
+  # Tested in the release profile deliberately. The dev and release profiles
+  # share no artifacts, so testing in dev would compile the whole dependency
+  # tree once for the tests and again for the build. This way the tests warm
+  # the exact artifacts the build then reuses.
+  - ${{ if eq(parameters.runTests, true) }}:
+      - script: cargo test --release --manifest-path src-tauri/Cargo.toml
+        displayName: Test native backend
+
+  - ${{ if eq(parameters.buildInstallers, true) }}:
+      # WiX and NSIS write into `target\release\bundle`, which the cargo-target
+      # cache restores and neither of them ever cleans. A version bump is what
+      # makes that visible. The bump edits Cargo.toml, so `manifestHash` and
+      # the exact cache key change, so the `restoreKeys` prefix fallback
+      # restores a target directory from before the bump — with the installers
+      # it was holding still in it. Tauri writes this run's beside them and the
+      # publish below takes the whole directory, which is how build 241 shipped
+      # `afterm_0.1.0` and `afterm_1.0.0` of both installers a day after 1.0.0
+      # landed. That run then saved both into the new cache under the new key,
+      # so the stray outlives the bump that stranded it and every later run
+      # publishes it again.
+      #
+      # Packaging is not incremental — WiX and NSIS repackage from the linked
+      # executable on every run — so the directory costs nothing to throw away,
+      # and the artifact is then exactly what this run built.
+      - powershell: |
+          $bundle = "src-tauri/target/release/bundle"
+          if (Test-Path $bundle) { Remove-Item -Recurse -Force $bundle }
+        displayName: Clear installers from the restored cache
+        condition: and(succeeded(), eq(variables.publishArtifacts, 'True'))
+
+      - script: npm run tauri build
+        displayName: Build app and installers
+        condition: and(succeeded(), eq(variables.publishArtifacts, 'True'))
+
+  - ${{ if eq(parameters.buildInstallers, false) }}:
+      # --no-bundle stops after linking the executable, skipping WiX and NSIS
+      # packaging entirely. This is the fast lane for iterating on Windows.
+      - script: npm run tauri build -- --no-bundle
+        displayName: Build app only (no installers)
+        condition: and(succeeded(), eq(variables.publishArtifacts, 'True'))
+
+  # Published on every artifact-producing run, packaged or not: replacing this
+  # one file updates an existing installation, because the frontend is compiled
+  # into it.
+  - task: PublishPipelineArtifact@1
+    displayName: Publish afterm.exe
+    condition: and(succeeded(), eq(variables.publishArtifacts, 'True'))
+    inputs:
+      targetPath: $(Build.SourcesDirectory)\src-tauri\target\release\afterm.exe
+      artifactName: afterm-exe
+
+  - ${{ if eq(parameters.buildInstallers, true) }}:
+      - task: PublishPipelineArtifact@1
+        displayName: Publish MSI and NSIS installers
+        condition: and(succeeded(), eq(variables.publishArtifacts, 'True'))
+        inputs:
+          targetPath: $(Build.SourcesDirectory)\src-tauri\target\release\bundle
+          artifactName: afterm-windows
